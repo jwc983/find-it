@@ -219,6 +219,11 @@ h1 .bang { color: var(--accent); display: inline-block; transform: rotate(8deg);
 .meter { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .meter i { display: block; height: 100%; width: 0; background: var(--good); transition: width .06s linear; }
 
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+label.small-btn { cursor: pointer; position: relative; }
+.small-btn.danger { background: var(--rec); border-color: var(--rec); color: #fff; }
+.confirm { margin: 10px 0 4px; padding: 12px 14px; border-radius: 12px; background: var(--sky); border: 2px solid var(--rec); display: grid; gap: 10px; }
+.confirm p { margin: 0; font-weight: 700; line-height: 1.5; }
 .vtips { margin: 0; padding-left: 1.3em; color: var(--soft); font-weight: 600; line-height: 1.55; max-width: 65ch; }
 .vtips b { color: var(--ink); }
 .vgroup { background: var(--paper); border: 2px solid var(--line); border-radius: 18px; padding: 4px 16px 8px; }
@@ -355,6 +360,23 @@ h1 .bang { color: var(--accent); display: inline-block; transform: rotate(8deg);
         <li>Use a quiet room and a cheerful voice. Silence at the start and end is cut off and loudness is evened out automatically.</li>
         <li>Words you haven’t recorded yet are said by the computer voice, so you can record a few at a time.</li>
       </ul>
+
+      <section class="vgroup">
+        <h3>Backup<small id="lastBackup">Never backed up</small></h3>
+        <p class="gnote">Clips live only on this device. Save a backup file to iCloud Drive or Files to keep them safe, or to move them to another device or into the Home Screen app.</p>
+        <div class="rp-btns">
+          <button id="backupBtn" class="small-btn" type="button">⬇ Save backup</button>
+          <label id="restoreLabel" class="small-btn" for="restoreFile">⬆ Restore from backup<input id="restoreFile" class="vh" type="file" accept=".json,application/json"></label>
+        </div>
+        <div id="restoreConfirm" class="confirm" hidden>
+          <p id="restoreText"></p>
+          <div class="rp-btns">
+            <button id="restoreYes" class="small-btn danger" type="button">Restore</button>
+            <button id="restoreNo" class="small-btn" type="button">Cancel</button>
+          </div>
+        </div>
+        <p id="backupMsg" class="rp-msg" role="status" aria-live="polite"></p>
+      </section>
       <div id="vGroups" class="vwrap" style="padding:0"></div>
     </div>
   </section>
@@ -1057,6 +1079,92 @@ h1 .bang { color: var(--accent); display: inline-block; transform: rotate(8deg);
   ['pointerup', 'pointercancel'].forEach(ev => recBtn.addEventListener(ev, letGo));
   recBtn.addEventListener('contextmenu', e => e.preventDefault());
   recBtn.addEventListener('click', e => { if (e.detail === 0) { rec ? stopRec() : startRec(); } });   // keyboard
+
+  // ---------- Backup and restore ----------
+  // A backup is one JSON file: every clip's audio as base64, plus the name settings.
+  const toB64 = bytes => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); };
+  const fromB64 = b64 => { const s = atob(b64), out = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i); return out; };
+  const bkMsg = (msg, kind) => { const el = $('#backupMsg'); el.textContent = msg; el.className = 'rp-msg' + (kind ? ' ' + kind : ''); };
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+  function renderLastBackup() {
+    let t = null; try { t = localStorage.getItem('findit-last-backup'); } catch {}
+    $('#lastBackup').textContent = t ? 'Last saved ' + new Date(+t).toLocaleDateString() : 'Never backed up';
+  }
+  renderLastBackup();
+
+  $('#backupBtn').addEventListener('click', async () => {
+    const keys = Object.keys(clips);
+    if (!keys.length) { bkMsg('Nothing to back up yet. Record some clips first.', 'err'); return; }
+    // Build the file without awaiting, so the Share sheet still counts as opened by this tap.
+    const out = { app: 'find-it', version: 1, savedAt: new Date().toISOString(),
+      settings: { name: state.settings.name, sayName: state.settings.sayName }, clips: {} };
+    for (const k of keys) out.clips[k] = { type: clips[k].type, at: clips[k].at, data: toB64(new Uint8Array(clips[k].buf)) };
+    const fileName = `find-it-voice-backup-${out.savedAt.slice(0, 10)}.json`;
+    const file = new File([JSON.stringify(out)], fileName, { type: 'application/json' });
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'Find It voice backup' });
+      } else {
+        const url = URL.createObjectURL(file), a = document.createElement('a');
+        a.href = url; a.download = fileName; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      }
+      try { localStorage.setItem('findit-last-backup', String(Date.now())); } catch {}
+      renderLastBackup();
+      bkMsg(`Backup ready with ${plural(keys.length, 'clip')}. Keep the file somewhere safe, like iCloud Drive.`, 'ok');
+    } catch (err) {
+      bkMsg(err && err.name === 'AbortError' ? 'Backup cancelled.' : 'Couldn’t save the backup file. Try again.', err && err.name === 'AbortError' ? '' : 'err');
+    }
+  });
+
+  let pendingRestore = null;
+  $('#restoreFile').addEventListener('change', async e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    $('#restoreConfirm').hidden = true; pendingRestore = null;
+    try {
+      const data = JSON.parse(await f.text());
+      if (!data || data.app !== 'find-it' || !data.clips) throw 0;
+      const valid = new Set(ALL_CLIPS().map(c => c.k));
+      const entries = Object.entries(data.clips).filter(([k, v]) => valid.has(k) && v && typeof v.data === 'string' && v.data.length);
+      if (!entries.length) throw 0;
+      pendingRestore = { entries, settings: data.settings || {} };
+      const replacing = entries.filter(([k]) => haveClip(k)).length;
+      const when = data.savedAt ? ` saved ${new Date(data.savedAt).toLocaleDateString()}` : '';
+      $('#restoreText').textContent = `This backup${when} has ${plural(entries.length, 'clip')}. ` +
+        (replacing ? `${plural(replacing, 'clip')} you have now will be replaced by the backup’s version. ` : '') +
+        'Clips that aren’t in the backup are kept.';
+      $('#restoreConfirm').hidden = false;
+      bkMsg('');
+    } catch {
+      bkMsg('That file isn’t a Find It voice backup. Pick a file named like find-it-voice-backup-….json.', 'err');
+    }
+  });
+  $('#restoreNo').addEventListener('click', () => { pendingRestore = null; $('#restoreConfirm').hidden = true; bkMsg('Restore cancelled.'); });
+  $('#restoreYes').addEventListener('click', async () => {
+    if (!pendingRestore) return;
+    const { entries, settings } = pendingRestore;
+    pendingRestore = null; $('#restoreConfirm').hidden = true;
+    let done = 0;
+    try {
+      for (const [k, v] of entries) {
+        bkMsg(`Restoring ${done + 1} of ${entries.length}…`);
+        const rec_ = { buf: fromB64(v.data).buffer, type: v.type || 'audio/mp4', at: v.at || Date.now() };
+        await idb.put(k, rec_);
+        clips[k] = rec_; decoded.delete(k); done++;
+      }
+      // Fill in the name settings only where this device has none yet.
+      if (settings.name && !state.settings.name) { state.settings.name = settings.name; nameEl.value = settings.name; }
+      if (settings.sayName && !state.settings.sayName) { state.settings.sayName = settings.sayName; sayEl.value = settings.sayName; }
+      save();
+      try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch {}
+      bkMsg(`Restored ${plural(done, 'clip')}.`, 'ok');
+    } catch {
+      bkMsg(`Restored ${done} of ${entries.length} clips, then saving failed. The device may be out of storage.`, 'err');
+    }
+    renderVoice();
+  });
 
   // ---------- Start ----------
   idb.all().then(all => { Object.assign(clips, all); renderVoice(); })
