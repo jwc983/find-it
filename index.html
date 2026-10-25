@@ -421,7 +421,8 @@ h1 .bang { color: var(--accent); display: inline-block; transform: rotate(8deg);
   const CATS = {
     colors: { label: 'Colors',
       pool: () => COLORS.map(c => ({ key: c.id, clip: c.id, name: c.id, draw: () => balloon(c.hex) })),
-      ask: t => `Find the ${t.name} balloon!`, yes: t => `That's ${t.name}!`, no: w => `That one is ${w.name}.` },
+      ask: t => `Find the ${t.name} balloon!`, yes: t => `That's ${t.name}!`, no: w => `That one is ${w.name}.`,
+      askParts: t => ['find-the', t.clip, 'balloon'] },
     shapes: { label: 'Shapes',
       ctx: () => ({ hex: pick(COLORS).hex }),
       pool: () => SHAPES.map(s => ({ key: s.id, clip: s.id, name: s.id, draw: x => `<svg class="art" viewBox="0 0 100 100" aria-hidden="true">${s.svg(x.hex)}</svg>` })),
@@ -487,7 +488,7 @@ h1 .bang { color: var(--accent); display: inline-block; transform: rotate(8deg);
       ['praise-1', '“Great job!”'], ['praise-2', '“Hooray!”'], ['praise-3', '“You found it!”'],
       ['five-stars', '“Five stars! Amazing!”'], ['break', '“Time for a break! Great playing!”']
     ] },
-    { title: 'Colors', clips: COLORS.map(c => [c.id, `“${c.id}”`]) },
+    { title: 'Colors', note: 'Used as “Find the… yellow… balloon”.', clips: [['balloon', '“balloon”'], ...COLORS.map(c => [c.id, `“${c.id}”`])] },
     { title: 'Shapes', clips: SHAPES.map(s => [s.id, `“${s.id}”`]) },
     { title: 'Animals', clips: ANIMALS.map(a => [a.n, `“${a.n}”`]) },
     { title: 'Animal sounds', optional: true, note: 'Optional. Played after a right answer, like “Cow!… Moo!”', clips: ANIMALS.map(a => [a.n + '-sound', `“${cap(a.s)}!”`]) },
