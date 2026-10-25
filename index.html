@@ -353,7 +353,7 @@ h1 .bang { color: var(--accent); display: inline-block; transform: rotate(8deg);
         <li>Clips are saved <b>on this device only</b>. Record on the iPad your child plays on.</li>
         <li>If you added the game to the Home Screen, record from the Home Screen app. It keeps its own copy of the clips, separate from Safari.</li>
         <li>Use a quiet room and a cheerful voice. Silence at the start and end is cut off and loudness is evened out automatically.</li>
-        <li>Pip uses your voice for a sentence once every clip in it is recorded. Until then, that sentence uses the computer voice.</li>
+        <li>Words you haven’t recorded yet are said by the computer voice, so you can record a few at a time.</li>
       </ul>
       <div id="vGroups" class="vwrap" style="padding:0"></div>
     </div>
@@ -577,8 +577,19 @@ h1 .bang { color: var(--accent); display: inline-block; transform: rotate(8deg);
   }
   function stopClips() { playingSources.forEach(s => { try { s.stop(); } catch {} }); playingSources = []; }
 
-  // A sentence plays in your voice only when every required clip in it is recorded.
-  const canPlay = parts => state.settings.useVoice && parts.every(p => p.startsWith('?') || haveClip(p));
+  // What the computer voice says for a clip that hasn't been recorded yet.
+  const PART_TEXT = {
+    'find-the': 'Find the', find: 'Find', 'find-the-number': 'Find the number', 'find-the-letter': 'Find the letter',
+    'try-again': 'Oops! Try again!', 'praise-1': 'Great job!', 'praise-2': 'Hooray!', 'praise-3': 'You found it!',
+    'five-stars': 'Five stars! Amazing!', break: 'Time for a break! Great playing!', 'orange-fruit': 'orange'
+  };
+  function partText(k) {
+    if (k === 'name') return nmSay();
+    if (PART_TEXT[k]) return PART_TEXT[k];
+    if (k.startsWith('letter-')) return LETTER_SAY[k.slice(7).toUpperCase()];
+    if (k.endsWith('-sound')) { const a = ANIMALS.find(a => a.n + '-sound' === k); return a ? a.s + '!' : ''; }
+    return k;
+  }
 
   async function playClips(parts, token) {
     const keys = parts.map(p => p.replace(/^\?/, '')).filter(haveClip);
@@ -628,12 +639,32 @@ h1 .bang { color: var(--accent); display: inline-block; transform: rotate(8deg);
     });
   }
   function hush() { sayToken++; stopClips(); synth && synth.cancel(); talkers().forEach(p => p.classList.remove('talking')); }
-  // Say a sentence: your recorded clips when they are all there, otherwise the computer voice.
+  // Say a sentence. Recorded words play in your voice and missing ones are filled in by the computer voice.
+  // A sentence with no recordings at all is said by the computer voice as one natural sentence.
   async function speak(parts, text) {
     hush();
     const token = sayToken;
-    if (parts && canPlay(parts) && await playClips(parts, token)) return;
+    if (parts && state.settings.useVoice) {
+      const keys = parts.map(p => p.replace(/^\?/, ''));
+      if (keys.some(haveClip) && await playMixed(keys, token)) return;
+    }
     if (token === sayToken && text) await tts(text, token);
+  }
+  async function playMixed(keys, token) {
+    const loaded = await Promise.all(keys.filter(haveClip).map(loadClip));
+    if (loaded.some(x => !x)) return false;   // a recording failed to load: say it all with the computer voice
+    // Group neighbouring words, so the computer voice says "yellow balloon" in one go, not word by word.
+    const runs = [];
+    for (const k of keys) {
+      const mine = haveClip(k), last = runs[runs.length - 1];
+      if (last && last.mine === mine) last.keys.push(k); else runs.push({ mine, keys: [k] });
+    }
+    for (const r of runs) {
+      if (token !== sayToken) return true;
+      if (r.mine) await playClips(r.keys, token);
+      else { const t = r.keys.map(partText).filter(Boolean).join(' '); if (t) await tts(t, token); }
+    }
+    return true;
   }
 
   // ---------- Confetti ----------
@@ -726,7 +757,8 @@ h1 .bang { color: var(--accent); display: inline-block; transform: rotate(8deg);
   }
 
   const PRAISE_TEXT = ['Great job', 'You found it', 'Hooray', 'Well done', 'Yes', 'Super'];
-  const praiseClip = () => pick(['praise-1', 'praise-2', 'praise-3'].filter(haveClip)) || 'praise-1';
+  const PRAISE_CLIPS = ['praise-1', 'praise-2', 'praise-3'];
+  const praiseClip = () => { const mine = PRAISE_CLIPS.filter(haveClip); return pick(mine.length ? mine : PRAISE_CLIPS); };
   const praiseText = () => pick(PRAISE_TEXT) + (nm() ? `, ${nmSay()}` : '') + '!';
 
   async function tap(card, it) {
